@@ -14,7 +14,7 @@ Our own changes go on `homelab` as normal commits. Keep them small and in separa
 
 ## Automation (`.github/workflows/homelab.yml`)
 
-Runs every hour, on demand, and on every push to `homelab`:
+Runs once a day at 06:00 America/Sao_Paulo (09:00 UTC), on demand (`gh workflow run`), and on every push to `homelab`:
 
 1. `sync.sh` merges the latest upstream release tag (or the one you pass) into `homelab`. If `homelab` already has it, the run stops there.
 2. `test-gate.sh` builds and runs `go test ./...`. Upstream's own suite has failing and flaky tests at release tags, so the gate only fails on **new** failures (tests that pass on the upstream tag but fail here, after two retries).
