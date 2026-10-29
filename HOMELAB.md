@@ -14,7 +14,7 @@ Our own changes go on `homelab` as normal commits. Keep them small and in separa
 
 ## Automation (`.github/workflows/homelab.yml`)
 
-Runs every 4 hours, on demand, and on every push to `homelab`:
+Runs every hour, on demand, and on every push to `homelab`:
 
 1. `sync.sh` merges the latest upstream release tag (or the one you pass) into `homelab`. If `homelab` already has it, the run stops there.
 2. `test-gate.sh` builds and runs `go test ./...`. Upstream's own suite has failing and flaky tests at release tags, so the gate only fails on **new** failures (tests that pass on the upstream tag but fail here, after two retries).
@@ -47,6 +47,7 @@ To stop following upstream for a while, disable the workflow: `gh workflow disab
 ## Runtime on the NAS
 
 - Portainer stack `cliproxyapi` on `https://192.168.1.16:9443`, from this repo (`homelab` branch, `deploy/homelab/docker-compose.yml`), GitOps polling every 5 minutes.
+- Deploy watchdog: `/usr/local/bin/cliproxy-watchdog.sh` in the LXC, run every 15 min by `/etc/cron.d/cliproxy-watchdog`. If the running image still differs from `deploy/homelab/docker-compose.yml` 20 min after that file changed, it forces a Portainer git redeploy (with image pull). Log: `/var/log/cliproxy-watchdog.log` (only written on drift or errors).
 - Data on `/mnt/nas_app/cliproxyapi/`: `config.yaml` (client API keys, management key), `auths/` (OAuth tokens of the logged-in accounts), `logs/`, `plugins/`. None of it is in git.
 - API: `https://cliproxy.home.eduagarcia.com` (Nginx Proxy Manager, wildcard cert) or `http://192.168.1.16:8317`. Management panel: `/management.html`. Only reachable from the homelab LAN or Tailscale (devices on the ISP modem Wi-Fi need Tailscale on).
 - Logging in an account: `docker exec -it cli-proxy-api ./CLIProxyAPI --claude-login --no-browser` (or `--codex-login`, etc.), or use the management panel. The OAuth redirect goes to `localhost:<port>` on the machine with the browser, so tunnel it first: `ssh -L 54545:localhost:54545 root@192.168.1.16` (Claude 54545, Codex 1455, Antigravity 51121).
