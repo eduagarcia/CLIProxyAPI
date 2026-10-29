@@ -3,6 +3,8 @@
 This fork runs CLIProxyAPI on Eduardo's homelab (`docker-nas`, 192.168.1.16, CT 103 on Proxmox NAS).
 Upstream is `router-for-me/CLIProxyAPI`; this repo follows its **release tags** automatically.
 
+The full runbook (architecture, troubleshooting, accounts, NPM/OPNsense) lives in the homelab docs folder on Eduardo's PC: `/mnt/workspace/homelab/cliproxyapi.md`.
+
 ## Branches
 
 | Branch | What it is |
