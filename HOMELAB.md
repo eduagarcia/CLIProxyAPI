@@ -48,5 +48,5 @@ To stop following upstream for a while, disable the workflow: `gh workflow disab
 
 - Portainer stack `cliproxyapi` on `https://192.168.1.16:9443`, from this repo (`homelab` branch, `deploy/homelab/docker-compose.yml`), GitOps polling every 5 minutes.
 - Data on `/mnt/nas_app/cliproxyapi/`: `config.yaml` (client API keys, management key), `auths/` (OAuth tokens of the logged-in accounts), `logs/`, `plugins/`. None of it is in git.
-- API: `http://192.168.1.16:8317` (LAN and tailnet). Management panel: `http://192.168.1.16:8317/management.html`.
+- API: `https://cliproxy.home.eduagarcia.com` (Nginx Proxy Manager, wildcard cert) or `http://192.168.1.16:8317`. Management panel: `/management.html`. Only reachable from the homelab LAN or Tailscale (devices on the ISP modem Wi-Fi need Tailscale on).
 - Logging in an account: `docker exec -it cli-proxy-api ./CLIProxyAPI --claude-login --no-browser` (or `--codex-login`, etc.), or use the management panel. The OAuth redirect goes to `localhost:<port>` on the machine with the browser, so tunnel it first: `ssh -L 54545:localhost:54545 root@192.168.1.16` (Claude 54545, Codex 1455, Antigravity 51121).
