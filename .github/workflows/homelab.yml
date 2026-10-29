@@ -1,0 +1,194 @@
+# Homelab fork automation: merge upstream releases, verify, build the image, deploy.
+# Docs: HOMELAB.md. Manual run: gh workflow run homelab.yml -R eduagarcia/CLIProxyAPI [-f tag=v8.0.48]
+name: homelab
+
+on:
+  schedule:
+    - cron: "23 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to merge (empty = latest upstream release)"
+        required: false
+        default: ""
+      rebuild:
+        description: "Rebuild and redeploy even if there is no new upstream release"
+        type: boolean
+        default: false
+  push:
+    branches: [homelab]
+    paths-ignore:
+      - "deploy/homelab/**"
+      - "HOMELAB.md"
+
+concurrency:
+  group: homelab
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+
+env:
+  IMAGE: ghcr.io/eduagarcia/cliproxyapi
+  COMPOSE_FILE_PATH: deploy/homelab/docker-compose.yml
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: homelab
+          fetch-depth: 0
+          # PAT with Contents + Workflows write: upstream merges touch .github/workflows,
+          # which GITHUB_TOKEN is not allowed to push.
+          token: ${{ secrets.HOMELAB_PUSH_TOKEN }}
+
+      - name: Git identity and upstream tags
+        run: |
+          git config user.name "homelab-bot"
+          git config user.email "homelab-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          git fetch --quiet upstream --tags
+          echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Merge upstream release
+        id: sync
+        if: github.event_name != 'push'
+        run: .github/homelab/sync.sh "${{ inputs.tag }}"
+
+      - name: Decide
+        id: plan
+        run: |
+          if [[ "${{ github.event_name }}" == "push" || "${{ steps.sync.outputs.changed }}" == "true" || "${{ inputs.rebuild }}" == "true" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing new upstream; skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          tag="${{ steps.sync.outputs.tag }}"
+          [[ -n "$tag" ]] || tag="$(git tag --merged HEAD --sort=-v:refname 'v*' | head -1)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        if: steps.plan.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-check (build + test gate)
+        id: precheck
+        if: steps.plan.outputs.run == 'true' && steps.sync.outputs.conflict != 'true'
+        continue-on-error: true
+        run: .github/homelab/test-gate.sh "${{ steps.plan.outputs.tag }}"
+
+      # Claude Code runs at most once per update: to resolve merge conflicts, or to
+      # fix a clean merge that breaks the build or adds test failures.
+      - name: Claude Code (resolve / fix)
+        id: claude
+        if: steps.plan.outputs.run == 'true' && github.event_name != 'push' && (steps.sync.outputs.conflict == 'true' || steps.precheck.outcome == 'failure')
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          MODE: ${{ steps.sync.outputs.conflict == 'true' && 'the merge stopped with conflicts (merge in progress, conflicted files listed by `git diff --name-only --diff-filter=U`).' || 'the merge was clean but the build or the test gate fails; see `.github/homelab/test-gate.sh` output.' }}
+        run: |
+          npm install -g @anthropic-ai/claude-code >/dev/null
+          summary="$RUNNER_TEMP/claude-summary.md"
+          sed -e "s|{{TAG}}|$TAG|g" -e "s|{{BASE}}|$BASE_SHA|g" -e "s|{{SUMMARY}}|$summary|g" \
+              -e "s|{{MODE}}|$MODE|g" .github/homelab/claude-prompt.md > "$RUNNER_TEMP/prompt.md"
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" --dangerously-skip-permissions --max-turns 150 \
+            --output-format stream-json --verbose > "$RUNNER_TEMP/claude.jsonl" || true
+          jq -r 'select(.type=="result") | .result // empty' "$RUNNER_TEMP/claude.jsonl" | tail -50
+          { echo "## Claude Code"; cat "$summary" 2>/dev/null || echo "(no summary written)"; } >> "$GITHUB_STEP_SUMMARY"
+          if git ls-files -u | grep -q . || git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ':!*.md' >/dev/null; then
+            echo "::error::conflicts still present after Claude"; exit 1
+          fi
+          git add -A
+          if [[ -f .git/MERGE_HEAD ]]; then
+            git commit --no-edit -m "chore(sync): merge upstream $TAG (conflicts resolved by Claude Code)"
+          elif ! git diff --cached --quiet; then
+            git commit -m "fix(homelab): adapt to upstream $TAG (Claude Code)"
+          fi
+
+      - name: Stop if your own push breaks the gate
+        if: steps.precheck.outcome == 'failure' && github.event_name == 'push'
+        run: echo "::error::build or test gate failed on your push; nothing deployed" && exit 1
+
+      - name: Upload Claude transcript
+        if: always() && steps.claude.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ${{ runner.temp }}/claude*
+          if-no-files-found: ignore
+
+      - name: Test gate
+        if: steps.plan.outputs.run == 'true' && steps.claude.outcome == 'success'
+        run: .github/homelab/test-gate.sh "${{ steps.plan.outputs.tag }}"
+
+      - name: Image metadata
+        id: meta
+        if: steps.plan.outputs.run == 'true'
+        run: |
+          short="$(git rev-parse --short=8 HEAD)"
+          echo "version=${{ steps.plan.outputs.tag }}-hl.$short" >> "$GITHUB_OUTPUT"
+          echo "commit=$short" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh models catalog (same as upstream release build)
+        if: steps.plan.outputs.run == 'true'
+        run: bash .github/scripts/refresh-model-catalogs.sh
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.plan.outputs.run == 'true'
+
+      - uses: docker/login-action@v3
+        if: steps.plan.outputs.run == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push image
+        if: steps.plan.outputs.run == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy (bump image in compose; Portainer redeploys)
+        if: steps.plan.outputs.run == 'true'
+        run: |
+          git checkout -- . && git clean -fdq
+          sed -i -E "s|^(\s*image: ).*cliproxyapi:.*$|\1${IMAGE}:${{ steps.meta.outputs.version }}|" "$COMPOSE_FILE_PATH"
+          git add "$COMPOSE_FILE_PATH"
+          git commit -m "chore(deploy): cliproxyapi ${{ steps.meta.outputs.version }} [skip ci]"
+          for i in 1 2 3; do
+            git push origin HEAD:homelab && break
+            git pull --rebase=merges origin homelab
+          done
+          echo "Deployed \`${IMAGE}:${{ steps.meta.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue on failure
+        if: failure()
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "homelab update failed (${{ steps.plan.outputs.tag || 'unknown tag' }})" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Nothing was deployed; production keeps the previous image." || true

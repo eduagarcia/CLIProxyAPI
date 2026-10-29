@@ -1,0 +1,22 @@
+# Homelab deployment (Portainer git stack "cliproxyapi" on docker-nas 192.168.1.16).
+# Portainer polls this file on the `homelab` branch and redeploys when it changes.
+# The image line is bumped by .github/workflows/homelab.yml after every successful build.
+# Roll back by pointing it at an older tag (commit with a message containing [skip ci]).
+services:
+  cli-proxy-api:
+    image: ghcr.io/eduagarcia/cliproxyapi:v8.0.47-hl.bootstrap
+    container_name: cli-proxy-api
+    restart: unless-stopped
+    environment:
+      TZ: America/Sao_Paulo
+    ports:
+      - "8317:8317"   # API + management panel (/management.html)
+      # OAuth callback ports, only used while logging in an account (`--*-login`)
+      - "54545:54545" # Claude
+      - "1455:1455"   # Codex
+      - "51121:51121" # Antigravity
+    volumes:
+      - /mnt/nas_app/cliproxyapi/config.yaml:/CLIProxyAPI/config.yaml
+      - /mnt/nas_app/cliproxyapi/auths:/root/.cli-proxy-api
+      - /mnt/nas_app/cliproxyapi/logs:/CLIProxyAPI/logs
+      - /mnt/nas_app/cliproxyapi/plugins:/CLIProxyAPI/plugins
