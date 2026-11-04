@@ -4,7 +4,7 @@
 # Roll back by pointing it at an older tag (commit with a message containing [skip ci]).
 services:
   cli-proxy-api:
-    image: ghcr.io/eduagarcia/cliproxyapi:v8.0.53-hl.17d0e4cc
+    image: ghcr.io/eduagarcia/cliproxyapi:v8.0.54-hl.b9577664
     container_name: cli-proxy-api
     restart: unless-stopped
     environment:
